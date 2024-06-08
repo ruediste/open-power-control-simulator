@@ -1,0 +1,10 @@
+.react-flow__node-plus,
+.react-flow__node-number
+{
+    border: 1px solid #000;
+    border-radius: 3px;
+    padding: 10px;
+    &.selected{
+        background-color: lightblue;
+    }
+}
