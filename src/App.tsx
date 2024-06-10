@@ -25,6 +25,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import "./App.scss";
 import Sidebar from "./Sidebar";
+import calculate, { CalcNet, CalcNode, CalcNodeFunction } from "./calculation";
 
 let nextId = 0;
 function getId() {
@@ -47,17 +48,54 @@ function debounce<TArgs extends any[]>(
 interface NodeTypeInfo<TData> {
   component: ComponentType<NodeProps<TData>>;
   defaultData: TData;
+  calculateNode: CalcNodeFunction<TData>;
+  finishCalculation: (node: CalcNode<TData>, data: TData) => TData;
 }
 
+function nodeInfo<TData>(info: NodeTypeInfo<TData>): NodeTypeInfo<TData> {
+  return info;
+}
 const nodeTypeInfos: { [key: string]: NodeTypeInfo<any> } = {
-  number: {
+  number: nodeInfo({
     component: NumberNode,
-    defaultData: { type: "number", value: 0 },
-  },
-  plus: {
+    defaultData: { value: 0, locked: false },
+    calculateNode: (ctx) => {
+      if (ctx.data.locked) {
+        ctx.setPortValue("a", ctx.data.value);
+        ctx.setPortValue("b", ctx.data.value);
+      }
+    },
+    finishCalculation: (node, data) => {
+      if (data.locked) return data;
+      const portA = node.ports["a"];
+      const portB = node.ports["b"];
+      if (portA?.net.fixedValue) {
+        return { ...data, value: portA.net.value! };
+      }
+      if (portB?.net.fixedValue) {
+        return { ...data, value: portB.net.value! };
+      }
+      return data;
+    },
+  }),
+  plus: nodeInfo({
     component: PlusNode,
-    defaultData: { type: "generic" },
-  },
+    defaultData: {},
+    calculateNode: (ctx) => {
+      const a = ctx.node.ports["a"]?.net.value;
+      const b = ctx.node.ports["b"]?.net.value;
+      const c = ctx.node.ports["c"]?.net.value;
+      console.log("plus", a, b, c);
+      if (a !== undefined && b !== undefined && c == undefined) {
+        ctx.setPortValue("c", a + b);
+      } else if (a !== undefined && c !== undefined && b == undefined) {
+        ctx.setPortValue("b", c - a);
+      } else if (b !== undefined && c !== undefined && a == undefined) {
+        ctx.setPortValue("a", c - b);
+      }
+    },
+    finishCalculation: (node, data) => data,
+  }),
 };
 
 interface GenericNodeData {
@@ -78,7 +116,7 @@ function Toolbar() {
   );
 }
 
-function useUpdateNode<T>(_: NodeProps<NumberNodeData>): (newData: T) => void {
+function useUpdateNode<T>(_: NodeProps<T>): (newData: T) => void {
   const id = useNodeId();
   const flow = useReactFlow();
   return useCallback(
@@ -112,7 +150,6 @@ function NumberInput(props: {
 }
 
 interface NumberNodeData {
-  type: "number";
   value: number;
   locked: boolean;
 }
@@ -126,7 +163,7 @@ function NumberNode(props: NodeProps<NumberNodeData>) {
       <NumberInput
         disabled={!data.locked}
         value={data.value}
-        onChange={(value) => updateNode({ value })}
+        onChange={(value) => updateNode({ ...data, value })}
       />
       {data.locked ? (
         <i
@@ -145,7 +182,7 @@ function NumberNode(props: NodeProps<NumberNodeData>) {
   );
 }
 
-function PlusNode(props: NodeProps<{}>) {
+function PlusNode(_: NodeProps<{}>) {
   return (
     <>
       <Toolbar />
@@ -162,7 +199,7 @@ function PlusNode(props: NodeProps<{}>) {
         id="b"
         style={{ left: "initial", right: -2 }}
       />
-      <Handle type="source" position={Position.Bottom} id="r" />
+      <Handle type="source" position={Position.Bottom} id="c" />
     </>
   );
 }
@@ -231,6 +268,88 @@ export default function App() {
     [setEdges]
   );
 
+  function buildGraph(
+    nodes: Node<NodeData, string | undefined>[],
+    edges: Edge<EdgeData>[]
+  ) {
+    const graphNodes: { [key: string]: CalcNode<any> } = {};
+
+    // create all nodes without ports
+    for (const node of nodes) {
+      graphNodes[node.id] = new CalcNode(
+        node.id,
+        node.data,
+        nodeTypeInfos[node.type!].calculateNode
+      );
+    }
+
+    // node => port => [node, port]
+    const connections: {
+      [nodeId: string]: { [portId: string]: [string, string][] };
+    } = {};
+
+    function addConnection(
+      sourceNode: string,
+      sourcePort: string,
+      targetNode: string,
+      targetPort: string
+    ) {
+      if (!connections[sourceNode]) connections[sourceNode] = {};
+      if (!connections[sourceNode][sourcePort])
+        connections[sourceNode][sourcePort] = [];
+      connections[sourceNode][sourcePort].push([targetNode, targetPort]);
+    }
+
+    // fill connections
+    for (const edge of edges) {
+      addConnection(
+        edge.source,
+        edge.sourceHandle!,
+        edge.target,
+        edge.targetHandle!
+      );
+      addConnection(
+        edge.target,
+        edge.targetHandle!,
+        edge.source,
+        edge.sourceHandle!
+      );
+    }
+
+    const nets: CalcNet[] = [];
+    // create all ports
+    for (const node of nodes) {
+      if (!connections[node.id]) continue;
+      for (const portId of Object.keys(connections[node.id])) {
+        if (!graphNodes[node.id].ports[portId]) {
+          // collect the net connected to the port
+          const net = new CalcNet();
+          nets.push(net);
+          const border: [string, string][] = [[node.id, portId]];
+          const seen: { [nodeId: string]: { [portId: string]: true } } = {};
+          while (border.length > 0) {
+            const [nodeId, portId] = border.pop()!;
+            if (seen[nodeId]?.[portId]) continue;
+            if (!seen[nodeId]) seen[nodeId] = {};
+            seen[nodeId][portId] = true;
+
+            // encountered a new port
+            graphNodes[nodeId].ports[portId] = { net, fixedValue: false };
+            net.ports.push([graphNodes[nodeId], portId]);
+
+            for (const [targetNodeId, targetPortId] of connections[nodeId][
+              portId
+            ]) {
+              border.push([targetNodeId, targetPortId]);
+            }
+          }
+        }
+      }
+    }
+
+    return [graphNodes, nets] as const;
+  }
+
   return (
     <div
       style={{
@@ -276,7 +395,28 @@ export default function App() {
             <Background variant={BackgroundVariant.Dots} gap={12} size={1} />
           </ReactFlow>
         </div>
-        <Sidebar />
+        <div>
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              const [calcNodes, nets] = buildGraph(nodes, edges);
+              calculate(calcNodes, nets);
+
+              setNodes((nds) =>
+                nds.map((node) => ({
+                  ...node,
+                  data: nodeTypeInfos[node.type!].finishCalculation(
+                    calcNodes[node.id],
+                    node.data
+                  ),
+                }))
+              );
+            }}
+          >
+            Calculate{" "}
+          </button>
+          <Sidebar />
+        </div>
       </ReactFlowProvider>
     </div>
   );
