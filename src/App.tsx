@@ -12,10 +12,12 @@ import ReactFlow, {
   NodeProps,
   NodeToolbar,
   NodeTypes,
+  OnEdgeUpdateFunc,
   Position,
   ReactFlowInstance,
   ReactFlowProvider,
   addEdge,
+  updateEdge,
   useEdgesState,
   useNodeId,
   useNodesState,
@@ -47,7 +49,7 @@ function debounce<TArgs extends any[]>(
 
 interface NodeTypeInfo<TData> {
   component: ComponentType<NodeProps<TData>>;
-  defaultData: TData;
+  defaultData: TData; // calculate the nodes
   calculateNode: CalcNodeFunction<TData>;
   finishCalculation: (node: CalcNode<TData>, data: TData) => TData;
 }
@@ -60,20 +62,38 @@ const nodeTypeInfos: { [key: string]: NodeTypeInfo<any> } = {
     component: NumberNode,
     defaultData: { value: 0, locked: false },
     calculateNode: (ctx) => {
+      const a = ctx.node.ports["a"];
+      const b = ctx.node.ports["b"];
       if (ctx.data.locked) {
-        ctx.setPortValue("a", ctx.data.value);
-        ctx.setPortValue("b", ctx.data.value);
+        if (a) {
+          ctx.addEquation((row) => {
+            row[a.net.id] = 100;
+          }, ctx.data.value * 100);
+        }
+
+        if (b) {
+          ctx.addEquation((row) => {
+            row[b.net.id] = 100;
+          }, ctx.data.value * 100);
+        }
+      } else {
+        if (a && b) {
+          ctx.addEquation((row) => {
+            row[a.net.id] = 1;
+            row[b.net.id] = -1;
+          }, 0);
+        }
       }
     },
     finishCalculation: (node, data) => {
       if (data.locked) return data;
       const portA = node.ports["a"];
       const portB = node.ports["b"];
-      if (portA?.net.fixedValue) {
-        return { ...data, value: portA.net.value! };
+      if (portA) {
+        return { ...data, value: portA.net.value };
       }
-      if (portB?.net.fixedValue) {
-        return { ...data, value: portB.net.value! };
+      if (portB) {
+        return { ...data, value: portB.net.value };
       }
       return data;
     },
@@ -82,19 +102,46 @@ const nodeTypeInfos: { [key: string]: NodeTypeInfo<any> } = {
     component: PlusNode,
     defaultData: {},
     calculateNode: (ctx) => {
-      const a = ctx.node.ports["a"]?.net.value;
-      const b = ctx.node.ports["b"]?.net.value;
-      const c = ctx.node.ports["c"]?.net.value;
-      console.log("plus", a, b, c);
-      if (a !== undefined && b !== undefined && c == undefined) {
-        ctx.setPortValue("c", a + b);
-      } else if (a !== undefined && c !== undefined && b == undefined) {
-        ctx.setPortValue("b", c - a);
-      } else if (b !== undefined && c !== undefined && a == undefined) {
-        ctx.setPortValue("a", c - b);
+      const a = ctx.node.ports["a"];
+      const b = ctx.node.ports["b"];
+      const c = ctx.node.ports["c"];
+      if (a && b && c) {
+        ctx.addEquation((row) => {
+          row[a.net.id] += 1;
+          row[b.net.id] += 1;
+          row[c.net.id] -= 1;
+        }, 0);
       }
     },
-    finishCalculation: (node, data) => data,
+    finishCalculation: (_, data) => data,
+  }),
+  mul: nodeInfo({
+    component: MulNode,
+    defaultData: {},
+    calculateNode: (ctx) => {
+      const a = ctx.node.ports["a"];
+      const b = ctx.node.ports["b"];
+      const c = ctx.node.ports["c"];
+
+      if (a && b && c) {
+        if (a.net === b.net) {
+          ctx.addEquation((row) => {
+            row[a.net.id] = a.net.value;
+            row[c.net.id] = -1;
+          }, 0);
+        } else {
+          ctx.addEquation((row) => {
+            row[a.net.id] = b.net.value;
+            row[c.net.id] -= 1;
+          }, 0);
+          ctx.addEquation((row) => {
+            row[b.net.id] = a.net.value;
+            row[c.net.id] -= 1;
+          }, 0);
+        }
+      }
+    },
+    finishCalculation: (_, data) => data,
   }),
 };
 
@@ -203,6 +250,27 @@ function PlusNode(_: NodeProps<{}>) {
     </>
   );
 }
+function MulNode(_: NodeProps<{}>) {
+  return (
+    <>
+      <Toolbar />
+      mul
+      <Handle
+        type="source"
+        position={Position.Top}
+        id="a"
+        style={{ left: 6 }}
+      />
+      <Handle
+        type="source"
+        position={Position.Top}
+        id="b"
+        style={{ left: "initial", right: -2 }}
+      />
+      <Handle type="source" position={Position.Bottom} id="c" />
+    </>
+  );
+}
 
 type NodeData = GenericNodeData | NumberNodeData;
 type EdgeData = {};
@@ -253,6 +321,7 @@ function wrap<A, B extends any[], C extends any[]>(
 export default function App() {
   const nodeState = useNodesState(initialNodes);
   const edgeState = useEdgesState(initialEdges);
+  const reconnectDone = useRef(true);
 
   const [nodes, setNodes, onNodesChange] = wrap(nodeState, () =>
     debouncedSave(nodeState[0], edgeState[0])
@@ -266,6 +335,31 @@ export default function App() {
   const onConnect = useCallback(
     (connection: Connection) => setEdges((eds) => addEdge(connection, eds)),
     [setEdges]
+  );
+
+  const onEdgeUpdateStart = useCallback(
+    (event: any, edge: any, handleType: any) => (reconnectDone.current = false),
+    []
+  );
+  const onEdgeUpdateEnd = useCallback(
+    (event: any, edge: Edge<EdgeData>, handleType: any) => {
+      if (!reconnectDone.current) {
+        setEdges((eds) => eds.filter((e) => e.id !== edge.id));
+      }
+
+      reconnectDone.current = true;
+    },
+    [setEdges]
+  );
+
+  // gets called after end of edge gets dragged to another source or target
+  const onEdgeUpdate = useCallback<OnEdgeUpdateFunc<NodeData>>(
+    (oldEdge, newConnection) => {
+      console.log(oldEdge, newConnection);
+      reconnectDone.current = true;
+      return setEdges((els) => updateEdge(oldEdge, newConnection, els));
+    },
+    []
   );
 
   function buildGraph(
@@ -323,7 +417,7 @@ export default function App() {
       for (const portId of Object.keys(connections[node.id])) {
         if (!graphNodes[node.id].ports[portId]) {
           // collect the net connected to the port
-          const net = new CalcNet();
+          const net = new CalcNet(nets.length, 1);
           nets.push(net);
           const border: [string, string][] = [[node.id, portId]];
           const seen: { [nodeId: string]: { [portId: string]: true } } = {};
@@ -334,7 +428,7 @@ export default function App() {
             seen[nodeId][portId] = true;
 
             // encountered a new port
-            graphNodes[nodeId].ports[portId] = { net, fixedValue: false };
+            graphNodes[nodeId].ports[portId] = { net };
             net.ports.push([graphNodes[nodeId], portId]);
 
             for (const [targetNodeId, targetPortId] of connections[nodeId][
@@ -367,6 +461,9 @@ export default function App() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onEdgeUpdate={onEdgeUpdate}
+            onEdgeUpdateStart={onEdgeUpdateStart}
+            onEdgeUpdateEnd={onEdgeUpdateEnd}
             onInit={(instance) => (reactFlowInstance.current = instance)}
             connectionMode={ConnectionMode.Loose}
             onDragOver={(event) => {

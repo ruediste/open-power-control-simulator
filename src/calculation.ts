@@ -1,58 +1,91 @@
+import Matrix, { solve } from "ml-matrix";
+
 export type CalcNodeFunction<TData> = (ctx: {
   node: CalcNode<TData>;
   data: TData;
-  setPortValue: (portId: string, value: number) => void;
+  addEquation: (func: (a: number[]) => void, b: number) => void;
 }) => void;
 
 export class CalcNode<TData> {
   ports: {
     [key: string]: {
       net: CalcNet;
-      /** if true, the port outputs a fixed value into the net */
-      fixedValue: boolean;
     };
   } = {};
 
   constructor(
     public graphNodeId: string,
-    public data: any,
+    public data: TData,
     public calculateNode: CalcNodeFunction<any>
   ) {}
 }
 
 export class CalcNet {
-  /** if true, one of the ports contributed a fixed value */
-  fixedValue = false;
-  value?: number;
   ports: [CalcNode<any>, string][] = [];
+  constructor(public id: number, public value: number) {}
 }
 
 export default function calculate(
-  graphNodes: { [key: string]: CalcNode<any> },
-  _: CalcNet[]
+  calcNodes: { [key: string]: CalcNode<any> },
+  nets: CalcNet[]
 ) {
-  // calculate the nodes
-  const pendingNodes: { [key: string]: CalcNode<any> } = { ...graphNodes };
-  while (Object.keys(pendingNodes).length > 0) {
-    const nextNode = Object.values(pendingNodes)[0];
-    delete pendingNodes[nextNode.graphNodeId];
-    nextNode.calculateNode({
-      node: nextNode,
-      data: nextNode.data,
-      setPortValue(portId, value) {
-        const port = nextNode.ports[portId];
-        if (!port) return;
-        if (port.fixedValue)
-          // port already output a value before, break the cycle
-          return;
-        port.fixedValue = true;
-        port.net.fixedValue = true;
-        port.net.value = value;
-        for (const [node, _] of port.net.ports) {
-          if (node === nextNode) continue;
-          pendingNodes[node.graphNodeId] = node;
-        }
-      },
-    });
+  let lastError: number | undefined;
+  let alpha = 1;
+  let lastX: Matrix | undefined;
+  while (true) {
+    const aRows: number[][] = [];
+    const b: number[] = [];
+
+    for (const node of Object.values(calcNodes)) {
+      node.calculateNode({
+        node: node,
+        data: node.data,
+        addEquation: (func, expected) => {
+          const aRow = new Array(nets.length).fill(0);
+          func(aRow);
+          aRows.push(aRow);
+          b.push(expected);
+        },
+      });
+    }
+
+    // solve the equations
+    const A = new Matrix(aRows);
+    const B = Matrix.columnVector(b);
+    const x = solve(A, B);
+
+    // apply the new values
+    for (const net of nets) {
+      net.value = (1 - alpha) * net.value + alpha * x.get(net.id, 0);
+    }
+
+    // calculate the error and break loop if applicable
+    const E = Matrix.sub(B, A.mmul(x));
+    const e = E.norm();
+    console.log(
+      "A",
+      A.toString(),
+      "B",
+      B.toString(),
+      "x",
+      x.toString(),
+      "Error: ",
+      e
+    );
+    if (lastError !== undefined && e > lastError * 0.99) {
+      alpha *= 0.9;
+    }
+
+    if (lastX !== undefined) {
+      const diff = Matrix.sub(x, lastX);
+      if (diff.norm() < 1e-8) {
+        break;
+      }
+    }
+    if (alpha < 0.1) {
+      break;
+    }
+    lastError = e;
+    lastX = x;
   }
 }

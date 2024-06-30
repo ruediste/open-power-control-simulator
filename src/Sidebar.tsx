@@ -15,6 +15,9 @@ export default function Sidebar() {
       <div onDragStart={(event) => onDragStart(event, "plus")} draggable>
         Plus
       </div>
+      <div onDragStart={(event) => onDragStart(event, "mul")} draggable>
+        Mul
+      </div>
     </aside>
   );
 }
