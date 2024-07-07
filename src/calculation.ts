@@ -30,8 +30,9 @@ export default function calculate(
   nets: CalcNet[]
 ) {
   let lastError: number | undefined;
-  let alpha = 1;
+  let alpha = 0.9;
   let lastX: Matrix | undefined;
+  let n = 0;
   while (true) {
     const aRows: number[][] = [];
     const b: number[] = [];
@@ -52,11 +53,13 @@ export default function calculate(
     // solve the equations
     const A = new Matrix(aRows);
     const B = Matrix.columnVector(b);
-    const x = solve(A, B);
+    let x = solve(A, B);
 
-    // apply the new values
+    if (lastX !== undefined) x = x.mul(alpha).add(lastX.mul(1 - alpha));
+
+    // apply the new values to the nets
     for (const net of nets) {
-      net.value = (1 - alpha) * net.value + alpha * x.get(net.id, 0);
+      net.value = x.get(net.id, 0);
     }
 
     // calculate the error and break loop if applicable
@@ -82,10 +85,11 @@ export default function calculate(
         break;
       }
     }
-    if (alpha < 0.1) {
+    if (alpha < 0.1 || n > 100) {
       break;
     }
     lastError = e;
     lastX = x;
+    n++;
   }
 }
