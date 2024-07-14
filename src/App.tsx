@@ -68,21 +68,24 @@ const nodeTypeInfos: { [key: string]: NodeTypeInfo<any> } = {
       if (ctx.data.locked) {
         if (a) {
           ctx.addEquation((row) => {
-            row[a.net.id] = 100;
-          }, ctx.data.value * 100);
+            row[a.net.id] = 1;
+            return a.net.value - ctx.data.value;
+          });
         }
 
         if (b) {
           ctx.addEquation((row) => {
-            row[b.net.id] = 100;
-          }, ctx.data.value * 100);
+            row[b.net.id] = 1;
+            return b.net.value - ctx.data.value;
+          });
         }
       } else {
         if (a && b) {
           ctx.addEquation((row) => {
             row[a.net.id] = 1;
             row[b.net.id] = -1;
-          }, 0);
+            return a.net.value - b.net.value;
+          });
         }
       }
     },
@@ -116,7 +119,8 @@ const nodeTypeInfos: { [key: string]: NodeTypeInfo<any> } = {
             row[port.net.id] -= 1;
           }
         });
-      }, 0);
+        return 0;
+      });
     },
     finishCalculation: (_, data) => data,
   }),
@@ -124,26 +128,26 @@ const nodeTypeInfos: { [key: string]: NodeTypeInfo<any> } = {
     component: MulNode,
     defaultData: newArithmeticNodeData,
     calculateNode: (ctx) => {
-      const a = ctx.node.ports["a"];
-      const b = ctx.node.ports["b"];
-      const c = ctx.node.ports["c"];
+      const topNets = ctx.node.data.topPorts.ids.flatMap((portId) => {
+        const port = ctx.node.ports[portId];
+        return port ? [port.net] : [];
+      });
+      const bottomNets = ctx.node.data.bottomPorts.ids.flatMap((portId) => {
+        const port = ctx.node.ports[portId];
+        return port ? [port.net] : [];
+      });
 
-      if (a && b && c) {
-        if (a.net === b.net) {
-          ctx.addEquation((row) => {
-            row[a.net.id] = a.net.value;
-            row[c.net.id] = -1;
-          }, 0);
-        } else {
-          ctx.addEquation((row) => {
-            row[a.net.id] = b.net.value;
-            row[c.net.id] -= 1;
-          }, 0);
-          ctx.addEquation((row) => {
-            row[b.net.id] = a.net.value;
-            row[c.net.id] -= 1;
-          }, 0);
-        }
+      if (topNets.length > 0 && bottomNets.length > 0) {
+        const topProduct = topNets.reduce((a, b) => a * b.value, 1);
+        const bottomProduct = bottomNets.reduce((a, b) => a * b.value, 1);
+
+        ctx.addEquation((row) => {
+          topNets.forEach((net) => (row[net.id] += topProduct / net.value));
+          bottomNets.forEach(
+            (net) => (row[net.id] -= bottomProduct / net.value)
+          );
+          return topProduct - bottomProduct;
+        });
       }
     },
     finishCalculation: (_, data) => data,

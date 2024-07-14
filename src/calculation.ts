@@ -3,7 +3,7 @@ import Matrix, { solve } from "ml-matrix";
 export type CalcNodeFunction<TData> = (ctx: {
   node: CalcNode<TData>;
   data: TData;
-  addEquation: (func: (a: number[]) => void, b: number) => void;
+  addEquation: (func: (a: number[]) => number) => void;
 }) => void;
 
 export class CalcNode<TData> {
@@ -30,9 +30,18 @@ export default function calculate(
   nets: CalcNet[]
 ) {
   let lastError: number | undefined;
-  let alpha = 0.9;
-  let lastX: Matrix | undefined;
+  let alpha = 1;
   let n = 0;
+
+  let x: Matrix;
+  {
+    const xData = new Array(nets.length);
+    for (const net of nets) {
+      xData[net.id] = net.value;
+    }
+    x = Matrix.columnVector(xData);
+  }
+
   while (true) {
     const aRows: number[][] = [];
     const b: number[] = [];
@@ -41,11 +50,11 @@ export default function calculate(
       node.calculateNode({
         node: node,
         data: node.data,
-        addEquation: (func, expected) => {
+        addEquation: (func) => {
           const aRow = new Array(nets.length).fill(0);
-          func(aRow);
+          const valueAtX = func(aRow);
           aRows.push(aRow);
-          b.push(expected);
+          b.push(-valueAtX);
         },
       });
     }
@@ -53,9 +62,9 @@ export default function calculate(
     // solve the equations
     const A = new Matrix(aRows);
     const B = Matrix.columnVector(b);
-    let x = solve(A, B);
+    let d = solve(A, B);
 
-    if (lastX !== undefined) x = x.mul(alpha).add(lastX.mul(1 - alpha));
+    x = x.add(d.scale({ scale: alpha }));
 
     // apply the new values to the nets
     for (const net of nets) {
@@ -63,9 +72,10 @@ export default function calculate(
     }
 
     // calculate the error and break loop if applicable
-    const E = Matrix.sub(B, A.mmul(x));
-    const e = E.norm();
+    const e = B.norm();
     console.log(
+      "alpha",
+      alpha,
       "A",
       A.toString(),
       "B",
@@ -79,17 +89,14 @@ export default function calculate(
       alpha *= 0.9;
     }
 
-    if (lastX !== undefined) {
-      const diff = Matrix.sub(x, lastX);
-      if (diff.norm() < 1e-8) {
-        break;
-      }
+    if (d.norm() < 1e-8) {
+      break;
     }
+
     if (alpha < 0.1 || n > 100) {
       break;
     }
     lastError = e;
-    lastX = x;
     n++;
   }
 }
