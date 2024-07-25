@@ -1,4 +1,6 @@
 import Matrix, { solve } from "ml-matrix";
+import { Edge, Node } from "reactflow";
+import { EdgeData, NodeData, nodeTypeInfos } from "./nodeTypes";
 
 export type CalcNodeFunction<TData> = (ctx: {
   node: CalcNode<TData>;
@@ -23,6 +25,88 @@ export class CalcNode<TData> {
 export class CalcNet {
   ports: [CalcNode<any>, string][] = [];
   constructor(public id: number, public value: number) {}
+}
+
+export function buildCalculationGraph(
+  nodes: Node<NodeData, string | undefined>[],
+  edges: Edge<EdgeData>[]
+) {
+  const graphNodes: { [key: string]: CalcNode<any> } = {};
+
+  // create all nodes without ports
+  for (const node of nodes) {
+    graphNodes[node.id] = new CalcNode(
+      node.id,
+      node.data,
+      nodeTypeInfos[node.type!].calculateNode
+    );
+  }
+
+  // node => port => [node, port]
+  const connections: {
+    [nodeId: string]: { [portId: string]: [string, string][] };
+  } = {};
+
+  function addConnection(
+    sourceNode: string,
+    sourcePort: string,
+    targetNode: string,
+    targetPort: string
+  ) {
+    if (!connections[sourceNode]) connections[sourceNode] = {};
+    if (!connections[sourceNode][sourcePort])
+      connections[sourceNode][sourcePort] = [];
+    connections[sourceNode][sourcePort].push([targetNode, targetPort]);
+  }
+
+  // fill connections
+  for (const edge of edges) {
+    addConnection(
+      edge.source,
+      edge.sourceHandle!,
+      edge.target,
+      edge.targetHandle!
+    );
+    addConnection(
+      edge.target,
+      edge.targetHandle!,
+      edge.source,
+      edge.sourceHandle!
+    );
+  }
+
+  const nets: CalcNet[] = [];
+  // create all ports
+  for (const node of nodes) {
+    if (!connections[node.id]) continue;
+    for (const portId of Object.keys(connections[node.id])) {
+      if (!graphNodes[node.id].ports[portId]) {
+        // collect the net connected to the port
+        const net = new CalcNet(nets.length, 1);
+        nets.push(net);
+        const border: [string, string][] = [[node.id, portId]];
+        const seen: { [nodeId: string]: { [portId: string]: true } } = {};
+        while (border.length > 0) {
+          const [nodeId, portId] = border.pop()!;
+          if (seen[nodeId]?.[portId]) continue;
+          if (!seen[nodeId]) seen[nodeId] = {};
+          seen[nodeId][portId] = true;
+
+          // encountered a new port
+          graphNodes[nodeId].ports[portId] = { net };
+          net.ports.push([graphNodes[nodeId], portId]);
+
+          for (const [targetNodeId, targetPortId] of connections[nodeId][
+            portId
+          ]) {
+            border.push([targetNodeId, targetPortId]);
+          }
+        }
+      }
+    }
+  }
+
+  return [graphNodes, nets] as const;
 }
 
 export default function calculate(
