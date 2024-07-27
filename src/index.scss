@@ -7,7 +7,7 @@
 $bootstrap-icons-font-dir: "/node_modules/bootstrap-icons/font/fonts";
 @import "../node_modules/bootstrap-icons/font/bootstrap-icons.scss";
 
-.InlineInput{
+.Input-inlineContainer{
     border: 1px solid transparent;
     &:hover{
     border: 1px dashed #000;

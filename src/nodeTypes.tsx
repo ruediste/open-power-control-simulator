@@ -1,4 +1,4 @@
-import { ComponentType, useCallback, useEffect } from "react";
+import { ComponentType, useCallback, useEffect, useId } from "react";
 import {
   Edge,
   Handle,
@@ -15,9 +15,11 @@ import "reactflow/dist/style.css";
 import { Graph } from "./App";
 import "./App.scss";
 import { CalcNode, CalcNodeFunction } from "./calculation";
-import { NumberInput } from "./NumberInput";
+import { NumberInput, StringInput } from "./Input";
 
 export interface NodeTypeInfo<TData> {
+  id: string;
+  label: string;
   component: ComponentType<NodeProps<TData>>;
   defaultData: () => TData; // calculate the nodes
   calculateNode: CalcNodeFunction<TData>;
@@ -27,10 +29,17 @@ export interface NodeTypeInfo<TData> {
 function nodeInfo<TData>(info: NodeTypeInfo<TData>): NodeTypeInfo<TData> {
   return info;
 }
-export const nodeTypeInfos: { [key: string]: NodeTypeInfo<any> } = {
-  number: nodeInfo({
+export const nodeTypeInfoList: NodeTypeInfo<any>[] = [
+  nodeInfo({
+    id: "number",
+    label: "Number",
     component: NumberNode,
-    defaultData: () => ({ type: "number" as const, value: 0, locked: false }),
+    defaultData: () => ({
+      type: "number" as const,
+      value: 0,
+      locked: false,
+      inputName: null,
+    }),
     calculateNode: (ctx) => {
       const a = ctx.node.ports["a"];
       const b = ctx.node.ports["b"];
@@ -71,7 +80,9 @@ export const nodeTypeInfos: { [key: string]: NodeTypeInfo<any> } = {
       return data;
     },
   }),
-  plus: nodeInfo({
+  nodeInfo({
+    id: "plus",
+    label: "Plus",
     component: PlusNode,
     defaultData: newArithmeticNodeData,
     calculateNode: (ctx) => {
@@ -93,7 +104,9 @@ export const nodeTypeInfos: { [key: string]: NodeTypeInfo<any> } = {
     },
     finishCalculation: (_, data) => data,
   }),
-  mul: nodeInfo({
+  nodeInfo({
+    id: "mul",
+    label: "Multiply",
     component: MulNode,
     defaultData: newArithmeticNodeData,
     calculateNode: (ctx) => {
@@ -121,7 +134,10 @@ export const nodeTypeInfos: { [key: string]: NodeTypeInfo<any> } = {
     },
     finishCalculation: (_, data) => data,
   }),
-};
+];
+
+export const nodeTypeInfos: { [key: string]: NodeTypeInfo<any> } =
+  Object.fromEntries(nodeTypeInfoList.map((x) => [x.id, x]));
 
 interface GenericNodeData {
   type: "generic";
@@ -145,15 +161,18 @@ interface NumberNodeData {
   type: "number";
   value: number;
   locked: boolean;
+  inputName: string | null;
 }
 
-function useUpdateNode<T>(_: NodeProps<T>): (newData: T) => void {
+function useUpdateNode<T>(_: NodeProps<T>): (newData: Partial<T>) => void {
   const id = useNodeId();
   const flow = useReactFlow();
   return useCallback(
     (newData) =>
       flow.setNodes((nodes) =>
-        nodes.map((n) => (n.id === id ? { ...n, data: newData } : n))
+        nodes.map((n) =>
+          n.id === id ? { ...n, data: { ...n.data, ...newData } } : n
+        )
       ),
     [id, flow]
   );
@@ -162,23 +181,49 @@ function useUpdateNode<T>(_: NodeProps<T>): (newData: T) => void {
 function NumberNode(props: NodeProps<NumberNodeData>) {
   const { data } = props;
   const updateNode = useUpdateNode(props);
+  const id = useId();
   return (
     <>
       <Toolbar />
       <NumberInput
         value={data.value}
-        onChange={(value) => updateNode({ ...data, value })}
+        onChange={(value) => updateNode({ value })}
       />
-      {data.locked ? (
-        <i
-          className="bi bi-lock"
-          onClick={() => updateNode({ ...data, locked: false })}
-        ></i>
-      ) : (
-        <i
-          className="bi bi-unlock"
-          onClick={() => updateNode({ ...data, locked: true })}
-        ></i>
+      <div style={{ display: "flex" }}>
+        {data.locked ? (
+          <i
+            className="bi bi-lock"
+            onClick={() => updateNode({ locked: false })}
+          ></i>
+        ) : (
+          <i
+            className="bi bi-unlock"
+            onClick={() => updateNode({ locked: true })}
+          ></i>
+        )}
+        <div className="form-check form-switch">
+          <input
+            className="form-check-input"
+            type="checkbox"
+            role="switch"
+            id={id}
+            checked={data.inputName !== null}
+            onChange={(e) =>
+              updateNode({
+                inputName: e.target.checked ? "" : null,
+              })
+            }
+          />
+          <label className="form-check-label" htmlFor={id}>
+            Graph Input
+          </label>
+        </div>
+      </div>
+      {data.inputName == null ? null : (
+        <StringInput
+          value={data.inputName}
+          onChange={(inputName) => updateNode({ inputName })}
+        />
       )}
       <Handle type="source" position={Position.Top} id="a" />
       <Handle type="source" position={Position.Bottom} id="b" />

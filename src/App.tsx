@@ -20,7 +20,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import "./App.scss";
 import calculate, { buildCalculationGraph } from "./calculation";
-import { InlineInput } from "./InlineInput";
+import { StringInput } from "./Input";
 import {
   afterGraphUpdate,
   EdgeData,
@@ -119,7 +119,8 @@ function GraphList({
                   }}
                 >
                   {isActiveGraph ? (
-                    <InlineInput
+                    <StringInput
+                      inline
                       value={graph.name}
                       onChange={(name) =>
                         setProject((p) => ({
@@ -345,7 +346,7 @@ export default function App() {
           >
             Calculate{" "}
           </button>
-          <Sidebar />
+          <Sidebar graphs={project.graphs} />
         </div>
       </ReactFlowProvider>
     </div>
