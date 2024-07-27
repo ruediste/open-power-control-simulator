@@ -20,6 +20,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import "./App.scss";
 import calculate, { buildCalculationGraph } from "./calculation";
+import { InlineInput } from "./InlineInput";
 import {
   afterGraphUpdate,
   EdgeData,
@@ -29,11 +30,8 @@ import {
   nodeTypeInfos,
 } from "./nodeTypes";
 import Sidebar from "./Sidebar";
-
-let nextId = 0;
-function getId() {
-  return `dndnode_${nextId++}`;
-}
+import { SortableList } from "./sortableList/SortableList";
+import { createRange } from "./utils";
 
 function debounce<TArgs extends any[]>(
   callback: (...args: TArgs) => void,
@@ -53,19 +51,24 @@ const nodeTypes: NodeTypes = Object.fromEntries(
 );
 
 export interface Graph {
+  id: number;
   name: string;
   nodes: GraphNode[];
   edges: GraphEdge[];
-  nextId: number;
 }
 interface Project {
-  currentGraphIndex: number;
+  nextId: number;
+  currentGraphId: number;
   graphs: Graph[];
 }
 
 const debouncedSave = debounce((project: Project) => {
   localStorage.setItem("project", JSON.stringify(project));
 }, 500);
+
+function getMockItems() {
+  return createRange(5, (index) => ({ id: index + 1 }));
+}
 
 function GraphList({
   project,
@@ -74,28 +77,69 @@ function GraphList({
   project: Project;
   setProject: (fn: (project: Project) => Project) => void;
 }) {
+  const [items, setItems] = useState(getMockItems);
   return (
-    <div>
-      <div className="list-group">
-        {project.graphs.map((graph, idx) => (
-          <button
-            type="button"
-            key={idx}
-            onClick={() => {
-              setProject((project) => ({
-                ...project,
-                currentGraphIndex: idx,
-              }));
-            }}
-            className={
-              "list-group-item list-group-item-action" +
-              (idx == project.currentGraphIndex ? " active" : "")
-            }
-          >
-            {graph.name}
-          </button>
-        ))}
-      </div>
+    <div style={{ margin: "4px" }}>
+      <SortableList
+        items={project.graphs}
+        onChange={(newGraphs) =>
+          setProject((p) => ({ ...p, graphs: newGraphs }))
+        }
+        renderContainer={(children) => (
+          <div className="list-group">{children}</div>
+        )}
+        renderItem={(graph, isDragPlaceholder) => {
+          const isActiveGraph =
+            !isDragPlaceholder && graph.id == project.currentGraphId;
+          return (
+            <SortableList.Item id={graph.id}>
+              {(setNodeRef, style) => (
+                <button
+                  className={
+                    "list-group-item list-group-item-action" +
+                    (isActiveGraph ? " active" : "")
+                  }
+                  type="button"
+                  ref={setNodeRef}
+                  style={{
+                    ...style,
+                    ...(isDragPlaceholder
+                      ? {
+                          backgroundColor: "white",
+                          border: "solid black 1px",
+                          borderRadius: "5px",
+                        }
+                      : {}),
+                  }}
+                  onClick={() => {
+                    setProject((project) => ({
+                      ...project,
+                      currentGraphId: graph.id,
+                    }));
+                  }}
+                >
+                  {isActiveGraph ? (
+                    <InlineInput
+                      value={graph.name}
+                      onChange={(name) =>
+                        setProject((p) => ({
+                          ...p,
+                          graphs: p.graphs.map((g) =>
+                            g.id == graph.id ? { ...g, name } : g
+                          ),
+                        }))
+                      }
+                    />
+                  ) : (
+                    graph.name
+                  )}
+                  <SortableList.DragHandle />
+                </button>
+              )}
+            </SortableList.Item>
+          );
+        }}
+      ></SortableList>
       <button
         type="button"
         className="btn btn-primary"
@@ -103,11 +147,12 @@ function GraphList({
           setProject((project) => ({
             ...project,
             currentGraphIndex: project.graphs.length,
+            nextId: project.nextId + 1,
             graphs: project.graphs.concat({
+              id: project.nextId,
               name: "New Graph",
               nodes: [],
               edges: [],
-              nextId: 0,
             }),
           }));
         }}
@@ -127,27 +172,34 @@ export default function App() {
       return JSON.parse(stored) as Project;
     } else {
       return {
-        currentGraphIndex: 0,
+        nextId: 2,
+        currentGraphId: 1,
         graphs: [
           {
+            id: 1,
             name: "Initial",
             nodes: [],
             edges: [],
-            nextId: 0,
           },
         ],
       } as Project;
     }
   });
 
-  const graph = project.graphs[project.currentGraphIndex];
+  const graph = project.graphs.find((x) => x.id == project.currentGraphId)!;
 
-  function setGraph(fn: (graph: Graph) => Graph) {
+  function setGraph(fn: (graph: Graph, nextId: () => number) => Graph) {
     setProject((project) => {
+      let nextId = project.nextId;
+      const modifiedGraph = fn(
+        project.graphs.find((x) => x.id == project.currentGraphId)!,
+        () => nextId++
+      );
       return {
         ...project,
+        nextId,
         graphs: project.graphs.map((g, idx) =>
-          idx === project.currentGraphIndex ? fn(g) : g
+          g.id == project.currentGraphId ? modifiedGraph : g
         ),
       };
     });
@@ -253,10 +305,10 @@ export default function App() {
                 x: event.clientX,
                 y: event.clientY,
               });
-              setGraph((graph) => ({
+              setGraph((graph, nextId) => ({
                 ...graph,
                 nodes: graph.nodes.concat({
-                  id: getId(),
+                  id: `dndnode_${nextId()}`,
                   type,
                   position,
                   data: nodeTypeInfos[type].defaultData(),
