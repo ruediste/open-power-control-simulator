@@ -1,6 +1,6 @@
 import Matrix, { solve } from "ml-matrix";
-import { Edge, Node } from "reactflow";
-import { EdgeData, NodeData, nodeTypeInfos } from "./nodeTypes";
+import { Graph, Project } from "./App";
+import { getConnectionNodes, GraphNode, nodeTypeInfos } from "./nodeTypes";
 
 export type CalcNodeFunction<TData> = (ctx: {
   node: CalcNode<TData>;
@@ -9,13 +9,14 @@ export type CalcNodeFunction<TData> = (ctx: {
 }) => void;
 
 export class CalcNode<TData> {
-  ports: {
+  connectedNetsByPort: {
     [key: string]: {
       net: CalcNet;
     };
   } = {};
 
   constructor(
+    public id: string,
     public graphNodeId: string,
     public data: TData,
     public calculateNode: CalcNodeFunction<any>
@@ -27,86 +28,145 @@ export class CalcNet {
   constructor(public id: number, public value: number) {}
 }
 
-export function buildCalculationGraph(
-  nodes: Node<NodeData, string | undefined>[],
-  edges: Edge<EdgeData>[]
-) {
-  const graphNodes: { [key: string]: CalcNode<any> } = {};
+class CalculationGraphBuildingContext {
+  calcNodes: { [key: string]: CalcNode<any> } = {};
+  /** nodeId => port => [node, port][]*/
+  connections: {
+    [nodeId: string]: {
+      [portId: string]: { nodeId: string; port: string }[];
+    };
+  } = {};
 
-  // create all nodes without ports
-  for (const node of nodes) {
-    graphNodes[node.id] = new CalcNode(
+  constructor(public project: Project) {}
+
+  addConnection(
+    sourceNode: string,
+    sourcePort: string,
+    targetNode: string,
+    targetPort: string
+  ) {
+    this.addConnectionImpl(sourceNode, sourcePort, targetNode, targetPort);
+    this.addConnectionImpl(targetNode, targetPort, sourceNode, sourcePort);
+  }
+
+  private addConnectionImpl(
+    sourceNode: string,
+    sourcePort: string,
+    targetNode: string,
+    targetPort: string
+  ) {
+    if (!this.connections[sourceNode]) this.connections[sourceNode] = {};
+    if (!this.connections[sourceNode][sourcePort])
+      this.connections[sourceNode][sourcePort] = [];
+    this.connections[sourceNode][sourcePort].push({
+      nodeId: targetNode,
+      port: targetPort,
+    });
+  }
+}
+
+function collectCalcNodes(
+  nodeIdPrefix: string,
+  graph: Graph,
+  parentGraphIds: Set<number>,
+  ctx: CalculationGraphBuildingContext
+) {
+  if (parentGraphIds.has(graph.id)) return;
+  parentGraphIds.add(graph.id);
+
+  const nodeById: { [id: string]: GraphNode } = {};
+
+  for (const node of graph.nodes) {
+    nodeById[node.id] = node;
+    if (node.data.type === "graphReference") {
+      const referencedGraph = ctx.project.getGraph(node.data.graphId);
+      collectCalcNodes(
+        nodeIdPrefix + node.id + ".",
+        referencedGraph,
+        parentGraphIds,
+        ctx
+      );
+
+      // create connections between the ports of the referencing node and the number node in the referenced graph
+      const conNodes = getConnectionNodes(referencedGraph);
+      conNodes[0].concat(conNodes[1]).forEach((conNode) => {
+        ctx.addConnection(
+          nodeIdPrefix + node.id, // id of the referencing node
+          conNode.id, // the port id is equal to the id of the number node in the referenced graph
+          nodeIdPrefix + node.id + "." + conNode.id, // build the id of the number node in the referenced graph
+          "a" // always connect to the "a" port
+        );
+      });
+    }
+    ctx.calcNodes[nodeIdPrefix + node.id] = new CalcNode(
+      nodeIdPrefix + node.id,
       node.id,
       node.data,
       nodeTypeInfos[node.type!].calculateNode
     );
   }
 
-  // node => port => [node, port]
-  const connections: {
-    [nodeId: string]: { [portId: string]: [string, string][] };
-  } = {};
-
-  function addConnection(
-    sourceNode: string,
-    sourcePort: string,
-    targetNode: string,
-    targetPort: string
-  ) {
-    if (!connections[sourceNode]) connections[sourceNode] = {};
-    if (!connections[sourceNode][sourcePort])
-      connections[sourceNode][sourcePort] = [];
-    connections[sourceNode][sourcePort].push([targetNode, targetPort]);
-  }
-
   // fill connections
-  for (const edge of edges) {
-    addConnection(
-      edge.source,
-      edge.sourceHandle!,
-      edge.target,
-      edge.targetHandle!
-    );
-    addConnection(
-      edge.target,
-      edge.targetHandle!,
-      edge.source,
-      edge.sourceHandle!
+  for (const edge of graph.edges) {
+    function mapHandle(nodeId: string, handle: string) {
+      const node = nodeById[nodeId];
+
+      // map connections to the b port of numbers to the a port
+      if (node.type === "number" && handle == "b")
+        return [nodeIdPrefix + nodeId, "a"] as const;
+      return [nodeIdPrefix + nodeId, handle] as const;
+    }
+    ctx.addConnection(
+      ...mapHandle(edge.source, edge.sourceHandle!),
+      ...mapHandle(edge.target, edge.targetHandle!)
     );
   }
+
+  parentGraphIds.delete(graph.id);
+}
+export function buildCalculationGraph(project: Project, inputGraph: Graph) {
+  const ctx = new CalculationGraphBuildingContext(project);
+  collectCalcNodes("", inputGraph, new Set(), ctx);
 
   const nets: CalcNet[] = [];
-  // create all ports
-  for (const node of nodes) {
-    if (!connections[node.id]) continue;
-    for (const portId of Object.keys(connections[node.id])) {
-      if (!graphNodes[node.id].ports[portId]) {
-        // collect the net connected to the port
-        const net = new CalcNet(nets.length, 1);
-        nets.push(net);
-        const border: [string, string][] = [[node.id, portId]];
-        const seen: { [nodeId: string]: { [portId: string]: true } } = {};
-        while (border.length > 0) {
-          const [nodeId, portId] = border.pop()!;
-          if (seen[nodeId]?.[portId]) continue;
-          if (!seen[nodeId]) seen[nodeId] = {};
-          seen[nodeId][portId] = true;
 
-          // encountered a new port
-          graphNodes[nodeId].ports[portId] = { net };
-          net.ports.push([graphNodes[nodeId], portId]);
+  // create the calculation nets and register them with the nodes
+  for (const [startNodeId, connectionsByPort] of Object.entries(
+    ctx.connections
+  )) {
+    const startNode = ctx.calcNodes[startNodeId];
+    for (const startPort of Object.keys(connectionsByPort)) {
+      if (startNode.connectedNetsByPort[startPort]) {
+        // we have reached this port already before, skip it
+        continue;
+      }
 
-          for (const [targetNodeId, targetPortId] of connections[nodeId][
-            portId
-          ]) {
-            border.push([targetNodeId, targetPortId]);
-          }
+      // starting from this port, create a net an connect all reachable ports
+      const net = new CalcNet(nets.length, 1);
+      nets.push(net);
+      const border: { nodeId: string; port: string }[] = [
+        { nodeId: startNodeId, port: startPort },
+      ];
+      const seen: { [nodeId: string]: { [portId: string]: true } } = {};
+      while (border.length > 0) {
+        const { nodeId, port } = border.pop()!;
+        if (seen[nodeId]?.[port]) continue;
+        if (!seen[nodeId]) seen[nodeId] = {};
+        seen[nodeId][port] = true;
+
+        const node = ctx.calcNodes[nodeId];
+        node.connectedNetsByPort[port] = { net };
+        net.ports.push([node, port]);
+
+        // follow all connections continuing from the target port
+        for (const { nodeId: targetNodeId, port: targetPort } of ctx
+          .connections[nodeId]?.[port] ?? []) {
+          border.push({ nodeId: targetNodeId, port: targetPort });
         }
       }
     }
   }
-
-  return [graphNodes, nets] as const;
+  return [ctx.calcNodes, nets] as const;
 }
 
 export default function calculate(

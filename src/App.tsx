@@ -70,7 +70,7 @@ interface ProjectData extends ProjectSerialized {
   graphIndexById: { [id: number]: number };
 }
 
-class Project {
+export class Project {
   constructor(public data: ProjectData) {}
 
   getGraph(graphId: number) {
@@ -390,10 +390,7 @@ export default function App() {
             <button
               className="btn btn-primary"
               onClick={() => {
-                const [calcNodes, nets] = buildCalculationGraph(
-                  graph.nodes,
-                  graph.edges
-                );
+                const [calcNodes, nets] = buildCalculationGraph(project, graph);
                 calculate(calcNodes, nets);
 
                 setGraph((graph) => ({

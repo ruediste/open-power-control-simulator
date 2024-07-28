@@ -164,8 +164,8 @@ nodeTypeInfoList.push(
       inputName: null,
     }),
     calculateNode: (ctx) => {
-      const a = ctx.node.ports["a"];
-      const b = ctx.node.ports["b"];
+      const a = ctx.node.connectedNetsByPort["a"];
+      // b is eliminated when creating the graph
       if (ctx.data.locked) {
         if (a) {
           ctx.addEquation((row) => {
@@ -173,32 +173,14 @@ nodeTypeInfoList.push(
             return a.net.value - ctx.data.value;
           });
         }
-
-        if (b) {
-          ctx.addEquation((row) => {
-            row[b.net.id] = 1;
-            return b.net.value - ctx.data.value;
-          });
-        }
-      } else {
-        if (a && b) {
-          ctx.addEquation((row) => {
-            row[a.net.id] = 1;
-            row[b.net.id] = -1;
-            return a.net.value - b.net.value;
-          });
-        }
       }
     },
     finishCalculation: (node, data) => {
       if (data.locked) return data;
-      const portA = node.ports["a"];
-      const portB = node.ports["b"];
+      const portA = node.connectedNetsByPort["a"];
+      // b is eliminated when creating the graph
       if (portA) {
         return { ...data, value: portA.net.value };
-      }
-      if (portB) {
-        return { ...data, value: portB.net.value };
       }
       return data;
     },
@@ -270,19 +252,22 @@ nodeTypeInfoList.push(
     defaultData: newArithmeticNodeData,
     calculateNode: (ctx) => {
       ctx.addEquation((row) => {
+        let error = 0;
         ctx.node.data.topPorts.ids.forEach((portId) => {
-          const port = ctx.node.ports[portId];
+          const port = ctx.node.connectedNetsByPort[portId];
           if (port) {
             row[port.net.id] += 1;
+            error += port.net.value;
           }
         });
         ctx.node.data.bottomPorts.ids.forEach((portId) => {
-          const port = ctx.node.ports[portId];
+          const port = ctx.node.connectedNetsByPort[portId];
           if (port) {
             row[port.net.id] -= 1;
+            error -= port.net.value;
           }
         });
-        return 0;
+        return error;
       });
     },
     finishCalculation: (_, data) => data,
@@ -307,11 +292,11 @@ nodeTypeInfoList.push(
     defaultData: newArithmeticNodeData,
     calculateNode: (ctx) => {
       const topNets = ctx.node.data.topPorts.ids.flatMap((portId) => {
-        const port = ctx.node.ports[portId];
+        const port = ctx.node.connectedNetsByPort[portId];
         return port ? [port.net] : [];
       });
       const bottomNets = ctx.node.data.bottomPorts.ids.flatMap((portId) => {
-        const port = ctx.node.ports[portId];
+        const port = ctx.node.connectedNetsByPort[portId];
         return port ? [port.net] : [];
       });
 
@@ -493,7 +478,11 @@ export function afterGraphUpdate(graph: Graph): Graph {
 export const nodeTypeInfos: { [key: string]: NodeTypeInfo<any> } =
   Object.fromEntries(nodeTypeInfoList.map((x) => [x.id, x]));
 
-export type NodeData = GenericNodeData | NumberNodeData | ArithmeticNodeData;
+export type NodeData =
+  | GenericNodeData
+  | NumberNodeData
+  | ArithmeticNodeData
+  | GraphReferenceNodeData;
 
 export type EdgeData = {};
 
