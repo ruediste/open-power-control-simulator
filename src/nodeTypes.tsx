@@ -1,4 +1,10 @@
-import { ComponentType, useCallback, useEffect, useId } from "react";
+import {
+  ComponentType,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+} from "react";
 import {
   Edge,
   Handle,
@@ -12,16 +18,17 @@ import {
 } from "reactflow";
 
 import "reactflow/dist/style.css";
-import { Graph } from "./App";
+import { Graph, isConnectionNode, ProjectContext } from "./App";
 import "./App.scss";
 import { CalcNode, CalcNodeFunction } from "./calculation";
 import { NumberInput, StringInput } from "./Input";
+import { SidebarDragData } from "./Sidebar";
 
 export interface NodeTypeInfo<TData> {
   id: string;
   label: string;
   component: ComponentType<NodeProps<TData>>;
-  defaultData: () => TData; // calculate the nodes
+  defaultData: (sidebarData: SidebarDragData) => TData; // calculate the nodes
   calculateNode: CalcNodeFunction<TData>;
   finishCalculation: (node: CalcNode<TData>, data: TData) => TData;
 }
@@ -29,115 +36,43 @@ export interface NodeTypeInfo<TData> {
 function nodeInfo<TData>(info: NodeTypeInfo<TData>): NodeTypeInfo<TData> {
   return info;
 }
-export const nodeTypeInfoList: NodeTypeInfo<any>[] = [
-  nodeInfo({
-    id: "number",
-    label: "Number",
-    component: NumberNode,
-    defaultData: () => ({
-      type: "number" as const,
-      value: 0,
-      locked: false,
-      inputName: null,
-    }),
-    calculateNode: (ctx) => {
-      const a = ctx.node.ports["a"];
-      const b = ctx.node.ports["b"];
-      if (ctx.data.locked) {
-        if (a) {
-          ctx.addEquation((row) => {
-            row[a.net.id] = 1;
-            return a.net.value - ctx.data.value;
-          });
-        }
+export const nodeTypeInfoList: NodeTypeInfo<any>[] = [];
 
-        if (b) {
-          ctx.addEquation((row) => {
-            row[b.net.id] = 1;
-            return b.net.value - ctx.data.value;
-          });
-        }
-      } else {
-        if (a && b) {
-          ctx.addEquation((row) => {
-            row[a.net.id] = 1;
-            row[b.net.id] = -1;
-            return a.net.value - b.net.value;
-          });
-        }
-      }
-    },
-    finishCalculation: (node, data) => {
-      if (data.locked) return data;
-      const portA = node.ports["a"];
-      const portB = node.ports["b"];
-      if (portA) {
-        return { ...data, value: portA.net.value };
-      }
-      if (portB) {
-        return { ...data, value: portB.net.value };
-      }
-      return data;
-    },
-  }),
-  nodeInfo({
-    id: "plus",
-    label: "Plus",
-    component: PlusNode,
-    defaultData: newArithmeticNodeData,
-    calculateNode: (ctx) => {
-      ctx.addEquation((row) => {
-        ctx.node.data.topPorts.ids.forEach((portId) => {
-          const port = ctx.node.ports[portId];
-          if (port) {
-            row[port.net.id] += 1;
-          }
-        });
-        ctx.node.data.bottomPorts.ids.forEach((portId) => {
-          const port = ctx.node.ports[portId];
-          if (port) {
-            row[port.net.id] -= 1;
-          }
-        });
-        return 0;
-      });
-    },
-    finishCalculation: (_, data) => data,
-  }),
-  nodeInfo({
-    id: "mul",
-    label: "Multiply",
-    component: MulNode,
-    defaultData: newArithmeticNodeData,
-    calculateNode: (ctx) => {
-      const topNets = ctx.node.data.topPorts.ids.flatMap((portId) => {
-        const port = ctx.node.ports[portId];
-        return port ? [port.net] : [];
-      });
-      const bottomNets = ctx.node.data.bottomPorts.ids.flatMap((portId) => {
-        const port = ctx.node.ports[portId];
-        return port ? [port.net] : [];
-      });
+function useUpdateNode<T>(_: NodeProps<T>): (newData: Partial<T>) => void {
+  const id = useNodeId();
+  const flow = useReactFlow();
+  return useCallback(
+    (newData) =>
+      flow.setNodes((nodes) =>
+        nodes.map((n) =>
+          n.id === id ? { ...n, data: { ...n.data, ...newData } } : n
+        )
+      ),
+    [id, flow]
+  );
+}
 
-      if (topNets.length > 0 && bottomNets.length > 0) {
-        const topProduct = topNets.reduce((a, b) => a * b.value, 1);
-        const bottomProduct = bottomNets.reduce((a, b) => a * b.value, 1);
+export function getConnectionNodes(
+  graph: Graph
+): [Node<NumberNodeData>[], Node<NumberNodeData>[]] {
+  const connectionNodes = graph.nodes.filter((n) => isConnectionNode(n));
 
-        ctx.addEquation((row) => {
-          topNets.forEach((net) => (row[net.id] += topProduct / net.value));
-          bottomNets.forEach(
-            (net) => (row[net.id] -= bottomProduct / net.value)
-          );
-          return topProduct - bottomProduct;
-        });
-      }
-    },
-    finishCalculation: (_, data) => data,
-  }),
-];
+  if (connectionNodes.length == 0) {
+    return [[], []];
+  }
 
-export const nodeTypeInfos: { [key: string]: NodeTypeInfo<any> } =
-  Object.fromEntries(nodeTypeInfoList.map((x) => [x.id, x]));
+  const minX = Math.min(...connectionNodes.map((x) => x.position.x));
+  const maxX = Math.max(...connectionNodes.map((x) => x.position.x));
+  const middleX = (maxX + minX) / 2;
+  return [
+    connectionNodes
+      .filter((x) => x.position.x <= middleX)
+      .sort((a, b) => a.position.y - b.position.y) as Node<NumberNodeData>[],
+    connectionNodes
+      .filter((x) => x.position.x > middleX)
+      .sort((a, b) => a.position.y - b.position.y) as Node<NumberNodeData>[],
+  ];
+}
 
 interface GenericNodeData {
   type: "generic";
@@ -162,20 +97,6 @@ interface NumberNodeData {
   value: number;
   locked: boolean;
   inputName: string | null;
-}
-
-function useUpdateNode<T>(_: NodeProps<T>): (newData: Partial<T>) => void {
-  const id = useNodeId();
-  const flow = useReactFlow();
-  return useCallback(
-    (newData) =>
-      flow.setNodes((nodes) =>
-        nodes.map((n) =>
-          n.id === id ? { ...n, data: { ...n.data, ...newData } } : n
-        )
-      ),
-    [id, flow]
-  );
 }
 
 function NumberNode(props: NodeProps<NumberNodeData>) {
@@ -230,6 +151,60 @@ function NumberNode(props: NodeProps<NumberNodeData>) {
     </>
   );
 }
+
+nodeTypeInfoList.push(
+  nodeInfo({
+    id: "number",
+    label: "Number",
+    component: NumberNode,
+    defaultData: () => ({
+      type: "number" as const,
+      value: 0,
+      locked: false,
+      inputName: null,
+    }),
+    calculateNode: (ctx) => {
+      const a = ctx.node.ports["a"];
+      const b = ctx.node.ports["b"];
+      if (ctx.data.locked) {
+        if (a) {
+          ctx.addEquation((row) => {
+            row[a.net.id] = 1;
+            return a.net.value - ctx.data.value;
+          });
+        }
+
+        if (b) {
+          ctx.addEquation((row) => {
+            row[b.net.id] = 1;
+            return b.net.value - ctx.data.value;
+          });
+        }
+      } else {
+        if (a && b) {
+          ctx.addEquation((row) => {
+            row[a.net.id] = 1;
+            row[b.net.id] = -1;
+            return a.net.value - b.net.value;
+          });
+        }
+      }
+    },
+    finishCalculation: (node, data) => {
+      if (data.locked) return data;
+      const portA = node.ports["a"];
+      const portB = node.ports["b"];
+      if (portA) {
+        return { ...data, value: portA.net.value };
+      }
+      if (portB) {
+        return { ...data, value: portB.net.value };
+      }
+      return data;
+    },
+  })
+);
+
 function ArithmeticPorts({
   data,
   id,
@@ -287,6 +262,33 @@ function PlusNode({ id, data }: NodeProps<ArithmeticNodeData>) {
   );
 }
 
+nodeTypeInfoList.push(
+  nodeInfo({
+    id: "plus",
+    label: "Plus",
+    component: PlusNode,
+    defaultData: newArithmeticNodeData,
+    calculateNode: (ctx) => {
+      ctx.addEquation((row) => {
+        ctx.node.data.topPorts.ids.forEach((portId) => {
+          const port = ctx.node.ports[portId];
+          if (port) {
+            row[port.net.id] += 1;
+          }
+        });
+        ctx.node.data.bottomPorts.ids.forEach((portId) => {
+          const port = ctx.node.ports[portId];
+          if (port) {
+            row[port.net.id] -= 1;
+          }
+        });
+        return 0;
+      });
+    },
+    finishCalculation: (_, data) => data,
+  })
+);
+
 function MulNode({ data, id }: NodeProps<ArithmeticNodeData>) {
   return (
     <>
@@ -296,6 +298,130 @@ function MulNode({ data, id }: NodeProps<ArithmeticNodeData>) {
     </>
   );
 }
+
+nodeTypeInfoList.push(
+  nodeInfo({
+    id: "mul",
+    label: "Multiply",
+    component: MulNode,
+    defaultData: newArithmeticNodeData,
+    calculateNode: (ctx) => {
+      const topNets = ctx.node.data.topPorts.ids.flatMap((portId) => {
+        const port = ctx.node.ports[portId];
+        return port ? [port.net] : [];
+      });
+      const bottomNets = ctx.node.data.bottomPorts.ids.flatMap((portId) => {
+        const port = ctx.node.ports[portId];
+        return port ? [port.net] : [];
+      });
+
+      if (topNets.length > 0 && bottomNets.length > 0) {
+        const topProduct = topNets.reduce((a, b) => a * b.value, 1);
+        const bottomProduct = bottomNets.reduce((a, b) => a * b.value, 1);
+
+        ctx.addEquation((row) => {
+          topNets.forEach((net) => (row[net.id] += topProduct / net.value));
+          bottomNets.forEach(
+            (net) => (row[net.id] -= bottomProduct / net.value)
+          );
+          return topProduct - bottomProduct;
+        });
+      }
+    },
+    finishCalculation: (_, data) => data,
+  })
+);
+
+interface GraphReferenceNodeData {
+  type: "graphReference";
+  graphId: number;
+}
+
+function GraphReferenceNode({ data, id }: NodeProps<GraphReferenceNodeData>) {
+  const project = useContext(ProjectContext)!;
+  const graph = project.getGraph(data.graphId);
+  const conNodes = getConnectionNodes(graph);
+  // const updateNodeInternals = useUpdateNodeInternals();
+  // useEffect(() => {
+  //   console.log("updating node internals");
+  //   updateNodeInternals(id);
+  // }, []);
+  return (
+    <>
+      <Toolbar />
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "row",
+          minHeight:
+            30 * Math.max(conNodes[0].length, conNodes[1].length) + "px",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            visibility: "hidden",
+          }}
+        >
+          {conNodes[0].map((node) => (
+            <div key={node.id}>{node.data.inputName}</div>
+          ))}
+        </div>
+        <div>{project.getGraph(data.graphId).name}</div>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            visibility: "hidden",
+          }}
+        >
+          {conNodes[1].map((node) => (
+            <div key={node.id}>{node.data.inputName}</div>
+          ))}
+        </div>
+      </div>
+      {conNodes[0].map((node, idx) => (
+        <Handle
+          key={node.id}
+          type="source"
+          position={Position.Left}
+          id={"" + node.id}
+          className="labeled"
+          style={{ top: 30 + idx * 30 + "px" }}
+        >
+          <div className="react-flow__handle" />
+          <div>{node.data.inputName}</div>
+        </Handle>
+      ))}
+      {conNodes[1].map((node, idx) => (
+        <Handle
+          key={node.id}
+          type="source"
+          position={Position.Right}
+          id={"" + node.id}
+          className="labeled"
+          style={{ top: 30 + idx * 30 + "px" }}
+        >
+          <div>{node.data.inputName}</div>
+          <div className="react-flow__handle" />
+        </Handle>
+      ))}
+    </>
+  );
+}
+
+nodeTypeInfoList.push(
+  nodeInfo({
+    id: "graphReference",
+    label: "---",
+    component: GraphReferenceNode,
+    defaultData: (sidebarData) =>
+      ({ type: "graphReference", graphId: sidebarData.graphId! } as const),
+    calculateNode: (ctx) => {},
+    finishCalculation: (_, data) => data,
+  })
+);
 
 interface PortRow {
   ids: string[];
@@ -327,7 +453,6 @@ export function afterGraphUpdate(graph: Graph): Graph {
     nodeId: string,
     prefix: string
   ): PortRow {
-    console.log("updatePorts", prefix);
     const result = { ...ports };
     result.ids = result.ids.filter(
       (portId, idx) =>
@@ -364,6 +489,9 @@ export function afterGraphUpdate(graph: Graph): Graph {
     ),
   };
 }
+
+export const nodeTypeInfos: { [key: string]: NodeTypeInfo<any> } =
+  Object.fromEntries(nodeTypeInfoList.map((x) => [x.id, x]));
 
 export type NodeData = GenericNodeData | NumberNodeData | ArithmeticNodeData;
 

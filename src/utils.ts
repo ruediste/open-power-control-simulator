@@ -4,3 +4,7 @@ export function createRange<T>(
 ): T[] {
   return [...new Array(length)].map((_, index) => initializer(index));
 }
+
+export function checkType<T>(arg: T): T {
+  return arg;
+}

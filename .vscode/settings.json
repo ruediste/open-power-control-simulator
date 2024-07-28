@@ -1,3 +1,4 @@
 {
-  "cSpell.words": ["dndnode", "nodrag", "reactflow"]
+  "cSpell.words": ["dndnode", "nodrag", "reactflow"],
+  "C_Cpp.dimInactiveRegions": false
 }
