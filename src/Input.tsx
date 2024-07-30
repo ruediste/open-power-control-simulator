@@ -1,9 +1,12 @@
-import { useEffect, useState } from "react";
+import { CSSProperties, useEffect, useState } from "react";
 
 type InputProps<T> = {
   value: T;
   disabled?: boolean;
   onChange: (value: T) => void;
+  placeholder?: string;
+  className?: string;
+  style?: CSSProperties;
 } & ({ inline?: false } | { inline?: true });
 
 export function Input<T>(
@@ -35,10 +38,14 @@ export function Input<T>(
     return (
       <input
         disabled={props.disabled}
-        className="form-control nodrag"
+        className={
+          "form-control nodrag" + (props.className ? " " + props.className : "")
+        }
+        style={props.style}
         type={props.type}
         value={valueInternal}
         onChange={(e) => setValueInternal(e.target.value)}
+        placeholder={props.placeholder}
         onBlur={() => {
           setEditing(false);
           props.onChange(props.parseValue(valueInternal));

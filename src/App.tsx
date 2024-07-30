@@ -18,7 +18,6 @@ import ReactFlow, {
 } from "reactflow";
 
 import "reactflow/dist/style.css";
-import "./App.scss";
 import calculate, { buildCalculationGraph } from "./calculation";
 import { StringInput } from "./Input";
 import {
@@ -63,7 +62,7 @@ interface ProjectSerialized {
 }
 
 export function isConnectionNode(node: GraphNode) {
-  return node.data.type == "number" && node.data.inputName != null;
+  return node.data.type == "number" && node.data.isInput;
 }
 
 interface ProjectData extends ProjectSerialized {

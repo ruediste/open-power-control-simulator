@@ -5,6 +5,10 @@ import { getConnectionNodes, GraphNode, nodeTypeInfos } from "./nodeTypes";
 export type CalcNodeFunction<TData> = (ctx: {
   node: CalcNode<TData>;
   data: TData;
+  /**
+   * Add an equation which should be solved: f(x)=0
+   * The func receives as argument a row in the Jacobian matrix. Fill it with the derivative of f(x) with
+   * respect to the members of x. Return the value f(x).  */
   addEquation: (func: (a: number[]) => number) => void;
 }) => void;
 
@@ -13,6 +17,10 @@ export class CalcNode<TData> {
     [key: string]: {
       net: CalcNet;
     };
+  } = {};
+
+  initialValuesByPort: {
+    [key: string]: number;
   } = {};
 
   constructor(
@@ -98,12 +106,18 @@ function collectCalcNodes(
         );
       });
     }
-    ctx.calcNodes[nodeIdPrefix + node.id] = new CalcNode(
+
+    var calcNode = new CalcNode(
       nodeIdPrefix + node.id,
       node.id,
       node.data,
       nodeTypeInfos[node.type!].calculateNode
     );
+
+    ctx.calcNodes[nodeIdPrefix + node.id] = calcNode;
+    if (node.data.type == "number") {
+      calcNode.initialValuesByPort["a"] = node.data.value;
+    }
   }
 
   // fill connections
@@ -148,6 +162,8 @@ export function buildCalculationGraph(project: Project, inputGraph: Graph) {
         { nodeId: startNodeId, port: startPort },
       ];
       const seen: { [nodeId: string]: { [portId: string]: true } } = {};
+      let initialValueCount = 0;
+      let initialValueSum = 0;
       while (border.length > 0) {
         const { nodeId, port } = border.pop()!;
         if (seen[nodeId]?.[port]) continue;
@@ -157,12 +173,19 @@ export function buildCalculationGraph(project: Project, inputGraph: Graph) {
         const node = ctx.calcNodes[nodeId];
         node.connectedNetsByPort[port] = { net };
         net.ports.push([node, port]);
+        if (node.initialValuesByPort[port] !== undefined) {
+          initialValueCount++;
+          initialValueSum += node.initialValuesByPort[port];
+        }
 
         // follow all connections continuing from the target port
         for (const { nodeId: targetNodeId, port: targetPort } of ctx
           .connections[nodeId]?.[port] ?? []) {
           border.push({ nodeId: targetNodeId, port: targetPort });
         }
+      }
+      if (initialValueCount > 0) {
+        net.value = initialValueSum / initialValueCount;
       }
     }
   }
@@ -190,6 +213,13 @@ export default function calculate(
     const aRows: number[][] = [];
     const b: number[] = [];
 
+    /* Multidimensional newton method
+      f(x + δ) ≈ f(x) + J(x) δ = 0
+      J(x) δ = −f(x)
+
+      x = x + αδ
+    */
+
     for (const node of Object.values(calcNodes)) {
       node.calculateNode({
         node: node,
@@ -208,6 +238,7 @@ export default function calculate(
     const B = Matrix.columnVector(b);
     let d = solve(A, B);
 
+    // perform the step
     x = x.add(d.scale({ scale: alpha }));
 
     // apply the new values to the nets

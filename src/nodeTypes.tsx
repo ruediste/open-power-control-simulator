@@ -19,7 +19,6 @@ import {
 
 import "reactflow/dist/style.css";
 import { Graph, isConnectionNode, ProjectContext } from "./App";
-import "./App.scss";
 import { CalcNode, CalcNodeFunction } from "./calculation";
 import { NumberInput, StringInput } from "./Input";
 import { SidebarDragData } from "./Sidebar";
@@ -92,11 +91,33 @@ function Toolbar() {
   );
 }
 
+const siPrefixes = [
+  { prefix: "T", factor: 1e12 },
+  { prefix: "G", factor: 1e9 },
+  { prefix: "M", factor: 1e6 },
+  { prefix: "k", factor: 1e3 },
+  { prefix: "", factor: 1 },
+  { prefix: "%", factor: 0.01 },
+  { prefix: "m", factor: 1e-3 },
+  { prefix: "u", factor: 1e-6 },
+  { prefix: "n", factor: 1e-9 },
+  { prefix: "p", factor: 1e-12 },
+] as const;
+
+type SiPrefix = (typeof siPrefixes)[number]["prefix"];
+
+const siPrefixMap: { [key in SiPrefix]: number } = Object.fromEntries(
+  siPrefixes.map((x) => [x.prefix, x.factor])
+) as any;
+
 interface NumberNodeData {
   type: "number";
   value: number;
   locked: boolean;
-  inputName: string | null;
+  name: string;
+  isInput: boolean;
+  prefix: SiPrefix;
+  unit: string;
 }
 
 function NumberNode(props: NodeProps<NumberNodeData>) {
@@ -106,46 +127,70 @@ function NumberNode(props: NodeProps<NumberNodeData>) {
   return (
     <>
       <Toolbar />
-      <NumberInput
-        value={data.value}
-        onChange={(value) => updateNode({ value })}
+      <div
+        className="input-group"
+        style={{ width: "300px", flexWrap: "unset" }}
+      >
+        <NumberInput
+          className="w-auto"
+          value={data.value / siPrefixMap[data.prefix]}
+          onChange={(value) =>
+            updateNode({ value: value * siPrefixMap[data.prefix] })
+          }
+        />
+        <select
+          className="form-select"
+          style={{ width: "75px" }}
+          value={data.prefix}
+          onChange={(e) => updateNode({ prefix: e.target.value as SiPrefix })}
+        >
+          {siPrefixes.map((prefix) => (
+            <option key={prefix.prefix} value={prefix.prefix}>
+              {prefix.prefix}
+            </option>
+          ))}
+        </select>
+        <StringInput
+          style={{ width: "95px" }}
+          value={data.unit}
+          onChange={(unit) => updateNode({ unit })}
+        />
+      </div>
+      <StringInput
+        placeholder="Name"
+        value={data.name}
+        onChange={(name) => updateNode({ name })}
       />
       <div style={{ display: "flex" }}>
-        {data.locked ? (
-          <i
-            className="bi bi-lock"
-            onClick={() => updateNode({ locked: false })}
-          ></i>
-        ) : (
-          <i
-            className="bi bi-unlock"
-            onClick={() => updateNode({ locked: true })}
-          ></i>
-        )}
         <div className="form-check form-switch">
           <input
             className="form-check-input"
             type="checkbox"
             role="switch"
-            id={id}
-            checked={data.inputName !== null}
-            onChange={(e) =>
-              updateNode({
-                inputName: e.target.checked ? "" : null,
-              })
-            }
+            id={id + "-locked"}
+            checked={data.locked}
+            onChange={(e) => updateNode({ locked: e.target.checked })}
           />
-          <label className="form-check-label" htmlFor={id}>
-            Graph Input
+          <label className="form-check-label" htmlFor={id + "-locked"}>
+            Locked
+          </label>
+        </div>
+
+        <div className="form-check form-switch">
+          <input
+            className="form-check-input"
+            type="checkbox"
+            role="switch"
+            id={id + "-input"}
+            checked={data.isInput}
+            onChange={(e) => updateNode({ isInput: e.target.checked })}
+          />
+          <label className="form-check-label" htmlFor={id + "-input"}>
+            Input
           </label>
         </div>
       </div>
-      {data.inputName == null ? null : (
-        <StringInput
-          value={data.inputName}
-          onChange={(inputName) => updateNode({ inputName })}
-        />
-      )}
+
       <Handle type="source" position={Position.Top} id="a" />
       <Handle type="source" position={Position.Bottom} id="b" />
     </>
@@ -161,7 +206,10 @@ nodeTypeInfoList.push(
       type: "number" as const,
       value: 0,
       locked: false,
-      inputName: null,
+      name: "",
+      isInput: false,
+      prefix: "" as const,
+      unit: "",
     }),
     calculateNode: (ctx) => {
       const a = ctx.node.connectedNetsByPort["a"];
@@ -331,6 +379,11 @@ function GraphReferenceNode({ data, id }: NodeProps<GraphReferenceNodeData>) {
   //   console.log("updating node internals");
   //   updateNodeInternals(id);
   // }, []);
+  function portText(node: Node<NumberNodeData>) {
+    return (
+      node.data.name + (node.data.unit !== "" ? ` [${node.data.unit}]` : "")
+    );
+  }
   return (
     <>
       <Toolbar />
@@ -350,7 +403,7 @@ function GraphReferenceNode({ data, id }: NodeProps<GraphReferenceNodeData>) {
           }}
         >
           {conNodes[0].map((node) => (
-            <div key={node.id}>{node.data.inputName}</div>
+            <div key={node.id}>{portText(node)}</div>
           ))}
         </div>
         <div>{project.getGraph(data.graphId).name}</div>
@@ -362,7 +415,7 @@ function GraphReferenceNode({ data, id }: NodeProps<GraphReferenceNodeData>) {
           }}
         >
           {conNodes[1].map((node) => (
-            <div key={node.id}>{node.data.inputName}</div>
+            <div key={node.id}>{portText(node)}</div>
           ))}
         </div>
       </div>
@@ -376,7 +429,7 @@ function GraphReferenceNode({ data, id }: NodeProps<GraphReferenceNodeData>) {
           style={{ top: 30 + idx * 30 + "px" }}
         >
           <div className="react-flow__handle" />
-          <div>{node.data.inputName}</div>
+          <div>{portText(node)}</div>
         </Handle>
       ))}
       {conNodes[1].map((node, idx) => (
@@ -388,7 +441,7 @@ function GraphReferenceNode({ data, id }: NodeProps<GraphReferenceNodeData>) {
           className="labeled"
           style={{ top: 30 + idx * 30 + "px" }}
         >
-          <div>{node.data.inputName}</div>
+          <div>{portText(node)}</div>
           <div className="react-flow__handle" />
         </Handle>
       ))}
